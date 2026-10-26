@@ -1,0 +1,31 @@
+# Set by Argo CD from the platform stack: workload name and replica count (env.yaml apps.replicas).
+name: ""
+
+# Never below 2; the chart refuses to render otherwise.
+replicas: 2
+
+# Set by Argo CD: the repository from the platform stack, the tag from the region's version file.
+image:
+  repository: ""
+  tag: ""
+
+# Set by Argo CD from the platform stack.
+host: ""
+dns:
+  # Same hostname in every region: Route53 latency records, one per region.
+  setIdentifier: ""
+  region: ""
+database:
+  host: ""
+  port: 5432
+  name: ""
+  secretArn: ""
+  # ClusterSecretStore for the region that holds the master secret.
+  secretStore: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 256Mi

@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [main]
     paths: &paths
+      - "stacks/**"
+      - "*/env.yaml"
       - "*/global/**"
       - "*/*/networking/**"
       - "*/*/compute/**"
@@ -15,6 +17,7 @@ on:
       - "*/*/observability/**"
       - ".github/workflows/terraform.yml"
       - ".github/workflows/terraform-env.yml"
+      - ".github/scripts/terraform.sh"
   push:
     branches: [main]
     paths: *paths
@@ -35,7 +38,7 @@ jobs:
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: 1.17.0
-      - run: terraform fmt -check -recursive -diff dev stg prd
+      - run: terraform fmt -check -recursive -diff stacks dev stg prd
 
   validate:
     runs-on: ubuntu-latest
@@ -51,7 +54,8 @@ jobs:
       - name: terraform validate
         run: |
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
-          for dir in $(find dev stg prd -name versions.tf -exec dirname {} \; | sort); do
+          # Every root (a folder with a lock file); the stacks are validated through them.
+          for dir in $(find dev stg prd -name .terraform -prune -o -name .terraform.lock.hcl -print | xargs -n1 dirname | sort); do
             echo "::group::$dir"
             terraform -chdir="$dir" init -backend=false
             terraform -chdir="$dir" validate
@@ -64,16 +68,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { environment: dev, account_id: "111111111111", regions: "us-east-1" }
-          - { environment: stg, account_id: "222222222222", regions: "us-east-1 us-west-1" }
-          - { environment: prd, account_id: "333333333333", regions: "us-east-1 us-west-1" }
+        environment: [dev, stg, prd]
     uses: ./.github/workflows/terraform-env.yml
     with:
       command: plan
       environment: ${{ matrix.environment }}
-      account_id: ${{ matrix.account_id }}
-      regions: ${{ matrix.regions }}
     permissions:
       contents: read
       id-token: write
@@ -85,8 +84,6 @@ jobs:
     with:
       command: apply
       environment: dev
-      account_id: "111111111111"
-      regions: us-east-1
     permissions:
       contents: read
       id-token: write
@@ -97,8 +94,6 @@ jobs:
     with:
       command: apply
       environment: stg
-      account_id: "222222222222"
-      regions: us-east-1 us-west-1
     permissions:
       contents: read
       id-token: write
@@ -109,8 +104,6 @@ jobs:
     with:
       command: apply
       environment: prd
-      account_id: "333333333333"
-      regions: us-east-1 us-west-1
     permissions:
       contents: read
       id-token: write

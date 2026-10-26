@@ -1,0 +1,5 @@
+apiVersion: v2
+name: app
+description: An app1 web service (gunicorn behind an ALB, reading Postgres credentials from Secrets Manager). Used by backend and frontend.
+type: application
+version: 1.0.0

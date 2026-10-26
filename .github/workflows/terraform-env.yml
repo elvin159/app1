@@ -1,7 +1,7 @@
 name: terraform-env
 
-# Plans or applies one environment: its global stack, then each region's stacks in dependency order.
-# The primary region comes first, because the other regions replicate its database.
+# Plans or applies one environment (see .github/scripts/terraform.sh for the order).
+# Account and regions come from <environment>/env.yaml.
 on:
   workflow_call:
     inputs:
@@ -12,13 +12,6 @@ on:
       environment:
         type: string
         required: true
-      account_id:
-        type: string
-        required: true
-      regions:
-        description: Space-separated, primary region first.
-        type: string
-        required: true
 
 permissions:
   contents: read
@@ -27,8 +20,6 @@ env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
   ENVIRONMENT: ${{ inputs.environment }}
-  REGIONS: ${{ inputs.regions }}
-  STACKS: networking compute database identity platform observability
 
 jobs:
   plan:
@@ -44,38 +35,13 @@ jobs:
         with:
           terraform_version: 1.17.0
           terraform_wrapper: false
+      - id: env
+        run: echo "account_id=$(yq '.account_id' "$ENVIRONMENT/env.yaml")" >> "$GITHUB_OUTPUT"
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          role-to-assume: arn:aws:iam::${{ inputs.account_id }}:role/github-terraform-plan
+          role-to-assume: arn:aws:iam::${{ steps.env.outputs.account_id }}:role/github-terraform-plan
           aws-region: us-east-1
-      - name: terraform plan
-        run: |
-          roots="global"
-          for region in $REGIONS; do
-            for stack in $STACKS; do roots="$roots $region/$stack"; done
-          done
-
-          for root in $roots; do
-            dir="$ENVIRONMENT/$root"
-            echo "::group::$dir"
-            terraform -chdir="$dir" init
-            # Read-only role: no state lock. Plans never write state.
-            terraform -chdir="$dir" plan -lock=false -no-color | tee "$RUNNER_TEMP/plan.txt"
-            echo "::endgroup::"
-            {
-              echo "<details><summary><code>$dir</code></summary>"
-              echo
-              echo '```'
-              cat "$RUNNER_TEMP/plan.txt"
-              echo '```'
-              echo "</details>"
-            } >> "$GITHUB_STEP_SUMMARY"
-            # Later roots look this one up, so they can't be planned until it has been applied.
-            if [ -z "$(terraform -chdir="$dir" state list)" ]; then
-              echo "::notice::$dir has not been applied yet; the roots after it are planned once it is."
-              break
-            fi
-          done
+      - run: .github/scripts/terraform.sh "$ENVIRONMENT" plan
 
   apply:
     if: inputs.command == 'apply'
@@ -91,22 +57,10 @@ jobs:
         with:
           terraform_version: 1.17.0
           terraform_wrapper: false
+      - id: env
+        run: echo "account_id=$(yq '.account_id' "$ENVIRONMENT/env.yaml")" >> "$GITHUB_OUTPUT"
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          role-to-assume: arn:aws:iam::${{ inputs.account_id }}:role/github-terraform-apply
+          role-to-assume: arn:aws:iam::${{ steps.env.outputs.account_id }}:role/github-terraform-apply
           aws-region: us-east-1
-      - name: terraform apply
-        run: |
-          roots="global"
-          for region in $REGIONS; do
-            for stack in $STACKS; do roots="$roots $region/$stack"; done
-          done
-
-          for root in $roots; do
-            dir="$ENVIRONMENT/$root"
-            echo "::group::$dir"
-            terraform -chdir="$dir" init
-            terraform -chdir="$dir" plan -out=tfplan
-            terraform -chdir="$dir" apply tfplan
-            echo "::endgroup::"
-          done
+      - run: .github/scripts/terraform.sh "$ENVIRONMENT" apply

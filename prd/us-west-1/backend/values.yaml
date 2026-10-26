@@ -1,5 +1,4 @@
 backend:
-  # Commit of apps/backend running here: the chart and the image both come from it.
+  # Commit of apps/backend (or apps/chart) running here: the chart and the image both come from it.
   # dev: set by the backend pipeline on every merge to main. stg, prd: set when that version is promoted.
   version: ""
-  replicas: 3

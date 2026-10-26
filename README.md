@@ -9,43 +9,53 @@ Docker or kubectl locally.
 ```
 app1/
 ├── apps/                      source, built once and promoted
-│   ├── backend/               gunicorn API + Helm chart
-│   ├── frontend/              gunicorn app (GET / → SELECT 1) + Helm chart + static/ for S3
+│   ├── backend/               gunicorn API
+│   ├── frontend/              gunicorn app (GET / → SELECT 1) + static/ for S3
+│   ├── chart/                 Helm chart shared by both apps
 │   └── argocd/                renders one Argo CD Application per app
-├── dev/ stg/ prd/             one folder per AWS account
+├── stacks/                    all Terraform logic, one module per stack
 │   ├── global/                account level: ECR + replication, deploy roles, S3/CloudFront static site
-│   └── us-east-1/ us-west-1/  region level, in this order:
-│       ├── networking/        VPC, subnets, NAT                 terraform-aws-networking
-│       ├── compute/           EKS cluster and nodes             terraform-aws-compute
-│       ├── database/          RDS writer + read replica, or a cross-region replica   terraform-aws-database
-│       ├── identity/          IRSA roles for the controllers    terraform-aws-identity
-│       ├── platform/          ALB Controller, ExternalDNS, External Secrets, Cluster Autoscaler,
-│       │                      Argo CD, ALB certificate, root Argo CD Application
-│       ├── observability/     CloudWatch alarms                 terraform-aws-observability
+│   ├── networking/            VPC, subnets, NAT                 → terraform-aws-networking
+│   ├── compute/               EKS cluster and nodes             → terraform-aws-compute
+│   ├── database/              writer + read replica, or a cross-region replica → terraform-aws-database
+│   ├── identity/              IRSA roles for the controllers    → terraform-aws-identity
+│   ├── platform/              ALB Controller, ExternalDNS, External Secrets, Cluster Autoscaler,
+│   │                          Argo CD, ALB certificate, root Argo CD Application
+│   └── observability/         CloudWatch alarms                 → terraform-aws-observability
+├── dev/ stg/ prd/             one folder per AWS account
+│   ├── env.yaml               everything that differs between environments
+│   ├── global/main.tf         root: calls stacks/global
+│   └── us-east-1/ us-west-1/  roots, applied in this order: networking, compute, database,
+│       │                      identity, platform, observability (each a main.tf calling its stack)
 │       ├── backend/values.yaml    version of each app running in this region
 │       └── frontend/values.yaml
-└── .github/workflows/         terraform, backend, frontend (+ reusable terraform-env, app)
+└── .github/                   workflows, the promote action, and scripts
 ```
 
-Each folder with a `versions.tf` is a Terraform root with its own state. Roots find each other with
-data sources (VPC by its `Name` tag, EKS cluster and RDS instances by name), never remote state.
-In every root, only the `locals` block differs between environments and regions.
+Each folder with a `.terraform.lock.hcl` is a Terraform root with its own state. Roots are identical
+in every environment and region: they take the environment and region from their folder names and
+everything else from `env.yaml`, and call a module in `stacks/`. Stacks find each other with data
+sources (VPC by its `Name` tag, EKS cluster and RDS instances by name), never remote state. CI sets
+each root's state bucket (`state_bucket` in `env.yaml`) and key (`app1/<path>/terraform.tfstate`).
 
 ## Using a module
 
-Every root calls one module from GitHub, pinned to a commit:
+Each stack calls one module from GitHub, pinned to a commit, with values from `env.yaml`:
 
 ```hcl
+# stacks/database/main.tf
 module "database" {
-  source = "git::https://github.com/elvin159/terraform-aws-database.git?ref=52027d8ee8910ef4388e4c98d39fd94b5f45d413"
+  source = "git::https://github.com/elvin159/terraform-aws-database.git?ref=71fc1bb184a73a448a868cb899f7581605378dd5"
 
-  name       = local.cluster_name
-  protection = local.protection
+  name           = local.cluster_name
+  protection     = var.config.protection
+  instance_class = var.config.database.instance_class
   # ...
 }
 ```
 
-To upgrade, change `ref` in every environment in one pull request and review the plans.
+To upgrade a module, change its `ref` once in `stacks/` and review the plans of every environment.
+To change an environment, edit its `env.yaml`.
 
 ## Regions
 
@@ -64,10 +74,9 @@ Both regions serve the same hostnames (`backend.<env>.example.com`, `frontend.<e
 ExternalDNS creates one Route53 latency record per region, so users reach the closest healthy one.
 The static site (`static.<env>.example.com`) is CloudFront, so it is global.
 
-**Losing the primary region:** promote the `us-west-1` replica. In `<env>/us-west-1/database`, set
-`primary_region = "us-west-1"` and `primary_cluster_name = "app1-<env>-usw1"` (do the same in
-`identity`, `platform` and `observability` so they look up the new writer), and merge. The module
-promotes the replica to a standalone writer with backups.
+**Losing the primary region:** set `primary_region: us-west-1` in `<env>/env.yaml` and merge. The
+`us-west-1` database stack promotes its replica to a standalone writer with backups, and every other
+stack follows the new primary.
 
 ## How changes ship
 
@@ -76,7 +85,8 @@ promotes the replica to a standalone writer with backups.
 | Terraform | `fmt`, `validate`, `plan` of every environment | `apply` dev → stg → prd, each after its environment's reviewers approve |
 | `apps/backend`, `apps/frontend` | `pytest`, `helm lint` | build once → dev → promote to stg → promote to prd |
 
-**Build once, promote:** an app's version is the Git SHA of the last commit that changed `apps/<app>`.
+**Build once, promote:** an app's version is the Git SHA of the last commit that changed `apps/<app>`
+or the shared chart.
 
 1. **dev:** the image is built and pushed to dev's ECR as `app1/<app>:<version>`. The version is
    committed to `dev/*/<app>/values.yaml`.
@@ -92,18 +102,18 @@ and CloudFront is invalidated.
 The app pipelines also run after every successful `terraform apply`, so a new environment deploys
 its apps without anyone pushing a change.
 
-## Adding a region
+## Adding a region or an environment
 
-1. Copy `<env>/us-west-1` to the new region folder. Change `region`, `cluster_name` and `vpc_cidr`
-   (unique across every environment and region), and `az_count` if the region has fewer than three
-   AZs.
-2. Add the region to `replica_regions` in `<env>/global/main.tf` and to the environment's `regions`
-   in `.github/workflows/terraform.yml`.
-3. Replicate the Argo CD deploy key secret to the region.
+- **Region:** add it under `regions` in `<env>/env.yaml` (cluster name, a VPC CIDR unique across
+  every environment and region, AZ count), and copy any region folder of that environment to the new
+  region's name. ECR replication, the database replica and the pipelines pick it up. Replicate the
+  Argo CD deploy key secret to the region.
+- **Environment:** copy an environment folder, edit its `env.yaml`, and add it to the plan matrix and
+  apply chain in `.github/workflows/terraform.yml` and the promotion chain in `app.yml`.
 
 ## Prerequisites (account bootstrap)
 
-These exist before this repo is used. The values in the code are stubs; replace them.
+These exist before this repo is used. The values are stubs in each `env.yaml`; replace them there.
 
 | What | dev | stg | prd |
 |---|---|---|---|
@@ -127,7 +137,36 @@ In GitHub:
 - `dev`, `stg` and `prd` environments with required reviewers.
 - Branch protection on `main` that requires a reviewed PR and lets `github-actions[bot]` push the
   version commits.
-- Self-hosted runners have the AWS CLI. GitHub-hosted runners provide `yq` and `skopeo`.
+- Self-hosted runners have the AWS CLI and `yq`. GitHub-hosted runners provide `yq` and `skopeo`.
+
+## Going live
+
+The code is complete and validated offline, but it has not been applied to AWS. What is left, in
+order:
+
+1. **Replace the stub values** in `dev/env.yaml`, `stg/env.yaml` and `prd/env.yaml`, under
+   `# Bootstrap prerequisites`, with the real ones from the account bootstrap: `state_bucket`,
+   `domain`, `hosted_zone_id`, `runner_egress_cidr`, `github_repo`, `deploy_subject`,
+   `argocd_repo_ssh_secret`, `alarm_emails`. Also replace `account_id`, and the account IDs under
+   `promotion`. Nothing else in the repo holds environment values. (The account IDs in
+   `apps/chart/ci-values.yaml` and `apps/argocd/ci-values.yaml` only feed chart linting.)
+2. **Publish the repo:** `git init` in `app1/`, push to `elvin159/app1`, and open a pull request to
+   `main`. Check that the prerequisites above are in place first, especially the GitHub
+   environments, branch protection and the self-hosted runners.
+3. **Merge the first pull request.** Expect:
+   - **terraform:** the PR plan stops at the first root that has never been applied (everything
+     after it depends on it), so on a new account it plans `global` only. After merge, `apply` runs
+     dev, then stg, then prd, each after its environment's reviewers approve.
+   - **backend / frontend:** the run triggered by the merge itself fails at the AWS login, because
+     the deploy roles and ECR don't exist until `global` is applied. The pipelines run again
+     automatically after `terraform` succeeds and deploy dev. They then ask the `stg` and `prd`
+     reviewers to approve the first promotion of each app.
+4. **Optional: tag the database module.** Tag `v2.0.0` on `terraform-aws-database` commit
+   `71fc1bb` and change the `ref` in `stacks/database/main.tf` to the tag. The commit pin works as
+   it is.
+
+Not verified before the first run: the Docker builds, the cross-account image copy (`skopeo`) and
+`.github/scripts/set-version.sh`. They run for the first time in CI.
 
 ## Operating Argo CD
 

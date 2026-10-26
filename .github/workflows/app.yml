@@ -2,8 +2,9 @@ name: app
 
 # Build once, promote the same image: dev -> stg -> prd.
 #
-# The version of an app is the Git SHA of the last commit that changed apps/<app>. It is the image tag
-# and the chart revision, so the image and its manifests move through the environments together.
+# The version of an app is the Git SHA of the last commit that changed apps/<app> or the shared chart
+# (apps/chart). It is the image tag and the chart revision, so the image and its manifests move through
+# the environments together.
 #   test         every run: pytest and chart lint.
 #   build        on main: build and push the image to dev, deploy it to dev.
 #   promote-stg  copy the image dev -> stg by digest and deploy it. Gated by the stg environment.
@@ -23,11 +24,6 @@ permissions:
 env:
   APP: ${{ inputs.app }}
   APP_DIR: apps/${{ inputs.app }}
-  AWS_REGION: us-east-1 # primary region; ECR replicates images to the others
-  # Bootstrap prerequisites (stub values).
-  DEV_ACCOUNT: "111111111111"
-  STG_ACCOUNT: "222222222222"
-  PRD_ACCOUNT: "333333333333"
 
 jobs:
   test:
@@ -43,8 +39,8 @@ jobs:
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.22.1
-      - run: helm lint "$APP_DIR/chart" -f "$APP_DIR/chart/ci-values.yaml"
-      - run: helm template "$APP" "$APP_DIR/chart" -f "$APP_DIR/chart/ci-values.yaml" > /dev/null
+      - run: helm lint apps/chart -f apps/chart/ci-values.yaml
+      - run: helm template "$APP" apps/chart -f apps/chart/ci-values.yaml > /dev/null
       - run: helm lint apps/argocd -f apps/argocd/ci-values.yaml
 
   build:
@@ -66,13 +62,17 @@ jobs:
       - name: Version
         id: version
         run: |
-          echo "version=$(git log -1 --format=%H -- "$APP_DIR")" >> "$GITHUB_OUTPUT"
-          echo "stg_version=$(yq ".$APP.version" "stg/us-east-1/$APP/values.yaml")" >> "$GITHUB_OUTPUT"
-          echo "prd_version=$(yq ".$APP.version" "prd/us-east-1/$APP/values.yaml")" >> "$GITHUB_OUTPUT"
+          echo "version=$(git log -1 --format=%H -- "$APP_DIR" apps/chart)" >> "$GITHUB_OUTPUT"
+          echo "account_id=$(yq '.account_id' dev/env.yaml)" >> "$GITHUB_OUTPUT"
+          echo "region=$(yq '.primary_region' dev/env.yaml)" >> "$GITHUB_OUTPUT"
+          # Promotion updates every region together, so the primary region's file is representative.
+          for env in stg prd; do
+            echo "${env}_version=$(yq ".$APP.version" "$env/$(yq '.primary_region' "$env/env.yaml")/$APP/values.yaml")" >> "$GITHUB_OUTPUT"
+          done
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          role-to-assume: arn:aws:iam::${{ env.DEV_ACCOUNT }}:role/github-app1-${{ inputs.app }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ steps.version.outputs.account_id }}:role/github-app1-${{ inputs.app }}
+          aws-region: ${{ steps.version.outputs.region }}
       - id: ecr
         uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
       - name: Build and push
@@ -101,26 +101,16 @@ jobs:
     permissions:
       contents: write
       id-token: write
-    env:
-      VERSION: ${{ needs.build.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      - uses: ./.github/actions/promote
         with:
-          role-to-assume: arn:aws:iam::${{ env.STG_ACCOUNT }}:role/github-app1-${{ inputs.app }}
-          aws-region: ${{ env.AWS_REGION }}
-      - run: .github/scripts/promote-image.sh "$APP" "$VERSION" "$DEV_ACCOUNT" "$STG_ACCOUNT"
-      # Static assets from the same commit as the image.
-      - if: inputs.app == 'frontend'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.VERSION }}
-          path: release
-      - if: inputs.app == 'frontend'
-        run: .github/scripts/sync-static.sh "release/$APP_DIR/static"
-      - run: .github/scripts/set-version.sh stg "$APP" "$VERSION"
+          app: ${{ inputs.app }}
+          version: ${{ needs.build.outputs.version }}
+          from: dev
+          to: stg
 
   promote-prd:
     needs: [build, promote-stg]
@@ -134,22 +124,13 @@ jobs:
     permissions:
       contents: write
       id-token: write
-    env:
-      VERSION: ${{ needs.build.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      - uses: ./.github/actions/promote
         with:
-          role-to-assume: arn:aws:iam::${{ env.PRD_ACCOUNT }}:role/github-app1-${{ inputs.app }}
-          aws-region: ${{ env.AWS_REGION }}
-      - run: .github/scripts/promote-image.sh "$APP" "$VERSION" "$STG_ACCOUNT" "$PRD_ACCOUNT"
-      - if: inputs.app == 'frontend'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.VERSION }}
-          path: release
-      - if: inputs.app == 'frontend'
-        run: .github/scripts/sync-static.sh "release/$APP_DIR/static"
-      - run: .github/scripts/set-version.sh prd "$APP" "$VERSION"
+          app: ${{ inputs.app }}
+          version: ${{ needs.build.outputs.version }}
+          from: stg
+          to: prd

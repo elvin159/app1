@@ -19,7 +19,7 @@ spec:
     path: {{ $app.path | quote }}
     helm:
       valuesObject:
-        {{- $values := mergeOverwrite (deepCopy $app.values) (dict "image" (dict "tag" $deploy.version) "replicas" ($deploy.replicas | default 2)) }}
+        {{- $values := mergeOverwrite (deepCopy $app.values) (dict "image" (dict "tag" $deploy.version)) }}
         {{- toYaml $values | nindent 8 }}
   destination:
     server: https://kubernetes.default.svc

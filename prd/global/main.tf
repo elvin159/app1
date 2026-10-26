@@ -1,34 +1,33 @@
+# Terraform root for the account-level stack. Identical in every environment: the environment comes
+# from the folder name, everything else from ../env.yaml.
+terraform {
+  required_version = "1.17.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "6.70.0"
+    }
+  }
+
+  # CI passes the bucket (state_bucket in env.yaml) and the key (this folder's path).
+  backend "s3" {
+    region       = "us-east-1"
+    encrypt      = true
+    use_lockfile = true
+  }
+}
+
 locals {
-  environment     = "prd"
-  account_id      = "333333333333"
-  region          = "us-east-1"   # primary region: images are pushed here
-  replica_regions = ["us-west-1"] # images are replicated here
-  apps            = ["backend", "frontend"]
-  force_destroy   = false # dev only
-
-  # Image promotion: dev -> stg -> prd. Each environment copies the image from the previous one.
-  promotion_source_account_id = "222222222222"
-  promotion_target_account_id = null
-
-  # Bootstrap prerequisites (stub values).
-  github_subject = "repo:elvin159/app1:environment:prd" # the only GitHub workflows allowed to deploy here
-  static_domain  = "static.prd.example.com"
-  hosted_zone_id = "Z0000000000000000PRD"
-
-  ecr_lifecycle_policy = jsonencode({
-    rules = [{
-      rulePriority = 1
-      description  = "Keep the last 50 images"
-      selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 50 }
-      action       = { type = "expire" }
-    }]
-  })
+  environment = basename(abspath("${path.module}/.."))
+  config      = yamldecode(file("${path.module}/../env.yaml"))
+  region      = local.config.primary_region # account-level resources live in the primary region
 }
 
 # OIDC only: CI assumes a role in this account. allowed_account_ids stops a run against the wrong account.
 provider "aws" {
   region              = local.region
-  allowed_account_ids = [local.account_id]
+  allowed_account_ids = [local.config.account_id]
 
   default_tags {
     tags = {
@@ -39,8 +38,14 @@ provider "aws" {
   }
 }
 
-# The app pipelines push images and static assets with these roles. They trust the account's GitHub
-# OIDC provider (bootstrap) and only the GitHub subject for this environment.
-data "aws_iam_openid_connect_provider" "github" {
-  url = "https://token.actions.githubusercontent.com"
+module "global" {
+  source = "../../stacks/global"
+
+  environment = local.environment
+  config      = local.config
+}
+
+output "global" {
+  description = "Outputs of stacks/global."
+  value       = module.global
 }

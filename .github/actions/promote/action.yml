@@ -1,0 +1,58 @@
+name: promote
+description: >-
+  Promote one app version from one environment to the next: copy the image by digest, sync the
+  frontend's static assets from the same commit, and commit the version for every region of the
+  target environment. Needs the repository checked out at main.
+
+inputs:
+  app:
+    description: backend or frontend.
+    required: true
+  version:
+    description: Git SHA of the version to promote.
+    required: true
+  from:
+    description: Environment the image is copied from.
+    required: true
+  to:
+    description: Environment to deploy to.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - id: accounts
+      shell: bash
+      env:
+        FROM: ${{ inputs.from }}
+        TO: ${{ inputs.to }}
+      run: |
+        echo "source=$(yq '.account_id' "$FROM/env.yaml")" >> "$GITHUB_OUTPUT"
+        echo "target=$(yq '.account_id' "$TO/env.yaml")" >> "$GITHUB_OUTPUT"
+        echo "region=$(yq '.primary_region' "$TO/env.yaml")" >> "$GITHUB_OUTPUT"
+    - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      with:
+        role-to-assume: arn:aws:iam::${{ steps.accounts.outputs.target }}:role/github-app1-${{ inputs.app }}
+        aws-region: ${{ steps.accounts.outputs.region }}
+    - shell: bash
+      env:
+        APP: ${{ inputs.app }}
+        VERSION: ${{ inputs.version }}
+        SOURCE: ${{ steps.accounts.outputs.source }}
+        TARGET: ${{ steps.accounts.outputs.target }}
+      run: .github/scripts/promote-image.sh "$APP" "$VERSION" "$SOURCE" "$TARGET"
+    # Static assets from the same commit as the image.
+    - if: inputs.app == 'frontend'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ inputs.version }}
+        path: release
+    - if: inputs.app == 'frontend'
+      shell: bash
+      run: .github/scripts/sync-static.sh release/apps/frontend/static
+    - shell: bash
+      env:
+        APP: ${{ inputs.app }}
+        VERSION: ${{ inputs.version }}
+        TO: ${{ inputs.to }}
+      run: .github/scripts/set-version.sh "$TO" "$APP" "$VERSION"

@@ -7,10 +7,12 @@ on:
     branches: [main]
     paths: &paths
       - "apps/frontend/**"
+      - "apps/chart/**"
       - "apps/argocd/**"
       - ".github/workflows/frontend.yml"
       - ".github/workflows/app.yml"
       - ".github/scripts/**"
+      - ".github/actions/**"
   push:
     branches: [main]
     paths: *paths

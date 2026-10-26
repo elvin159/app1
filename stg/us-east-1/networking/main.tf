@@ -1,19 +1,33 @@
-locals {
-  environment  = "stg"
-  account_id   = "222222222222"
-  region       = "us-east-1"
-  cluster_name = "app1-stg-use1" # VPC Name tag; later stacks look the VPC up by it
+# Terraform root for one stack. Identical in every environment and region: the environment and region
+# come from the folder names, everything else from ../../env.yaml.
+terraform {
+  required_version = "1.17.0"
 
-  vpc_cidr           = "10.32.0.0/16" # unique across every environment and region
-  az_count           = 3
-  single_nat_gateway = false # true in dev only: one NAT gateway instead of one per AZ
-  log_retention_days = 90
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "6.70.0"
+    }
+  }
+
+  # CI passes the bucket (state_bucket in env.yaml) and the key (this folder's path).
+  backend "s3" {
+    region       = "us-east-1"
+    encrypt      = true
+    use_lockfile = true
+  }
+}
+
+locals {
+  environment = basename(abspath("${path.module}/../.."))
+  region      = basename(abspath("${path.module}/.."))
+  config      = yamldecode(file("${path.module}/../../env.yaml"))
 }
 
 # OIDC only: CI assumes a role in this account. allowed_account_ids stops a run against the wrong account.
 provider "aws" {
   region              = local.region
-  allowed_account_ids = [local.account_id]
+  allowed_account_ids = [local.config.account_id]
 
   default_tags {
     tags = {
@@ -25,11 +39,13 @@ provider "aws" {
 }
 
 module "networking" {
-  source = "git::https://github.com/elvin159/terraform-aws-networking.git?ref=b929e585ecde926a9164b161091dc9abb465f278"
+  source = "../../../stacks/networking"
 
-  name                    = local.cluster_name
-  vpc_cidr                = local.vpc_cidr
-  az_count                = local.az_count
-  single_nat_gateway      = local.single_nat_gateway
-  flow_log_retention_days = local.log_retention_days
+  region = local.region
+  config = local.config
+}
+
+output "networking" {
+  description = "Outputs of stacks/networking."
+  value       = module.networking
 }

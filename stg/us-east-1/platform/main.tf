@@ -1,24 +1,37 @@
-locals {
-  environment          = "stg"
-  account_id           = "222222222222"
-  region               = "us-east-1"
-  cluster_name         = "app1-stg-use1"
-  primary_region       = "us-east-1"
-  primary_cluster_name = "app1-stg-use1"
-  is_primary           = local.region == local.primary_region
-  apps                 = ["backend", "frontend"]
+# Terraform root for one stack. Identical in every environment and region: the environment and region
+# come from the folder names, everything else from ../../env.yaml.
+terraform {
+  required_version = "1.17.0"
 
-  # Bootstrap prerequisites (stub values).
-  domain               = "stg.example.com"
-  hosted_zone_id       = "Z0000000000000000STG"
-  repo_ssh_url         = "git@github.com:elvin159/app1.git"
-  repo_ssh_secret_name = "app1/argocd-repo-ssh-key"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "6.70.0"
+    }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "3.3.0"
+    }
+  }
+
+  # CI passes the bucket (state_bucket in env.yaml) and the key (this folder's path).
+  backend "s3" {
+    region       = "us-east-1"
+    encrypt      = true
+    use_lockfile = true
+  }
+}
+
+locals {
+  environment = basename(abspath("${path.module}/../.."))
+  region      = basename(abspath("${path.module}/.."))
+  config      = yamldecode(file("${path.module}/../../env.yaml"))
 }
 
 # OIDC only: CI assumes a role in this account. allowed_account_ids stops a run against the wrong account.
 provider "aws" {
   region              = local.region
-  allowed_account_ids = [local.account_id]
+  allowed_account_ids = [local.config.account_id]
 
   default_tags {
     tags = {
@@ -37,35 +50,23 @@ provider "helm" {
     exec = {
       api_version = "client.authentication.k8s.io/v1beta1"
       command     = "aws"
-      args        = ["eks", "get-token", "--cluster-name", local.cluster_name, "--region", local.region]
+      args        = ["eks", "get-token", "--cluster-name", data.aws_eks_cluster.this.name, "--region", local.region]
     }
   }
 }
 
 data "aws_eks_cluster" "this" {
-  name = local.cluster_name
+  name = local.config.regions[local.region].cluster_name
 }
 
-# IRSA roles from the identity stack.
-data "aws_iam_role" "irsa" {
-  for_each = toset(["aws-load-balancer-controller", "external-dns", "external-secrets", "cluster-autoscaler"])
-
-  name = "${local.cluster_name}-${each.key}"
+module "platform" {
+  source      = "../../../stacks/platform"
+  environment = local.environment
+  region      = local.region
+  config      = local.config
 }
 
-# The writer holds the database name and the master secret.
-data "aws_db_instance" "primary" {
-  region                 = local.primary_region
-  db_instance_identifier = local.primary_cluster_name
-}
-
-# The local instance each app connects to: the backend reads from a read replica; the frontend uses
-# the writer where it is local, and this region's replica elsewhere.
-data "aws_db_instance" "app" {
-  for_each = {
-    backend  = local.is_primary ? "${local.cluster_name}-read1" : local.cluster_name
-    frontend = local.cluster_name
-  }
-
-  db_instance_identifier = each.value
+output "platform" {
+  description = "Outputs of stacks/platform."
+  value       = module.platform
 }
