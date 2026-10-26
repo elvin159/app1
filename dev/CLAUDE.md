@@ -16,6 +16,7 @@ These override anything below that contradicts them. The repo's `README.md` (at 
 12. **Pinning:** modules by commit SHA; Terraform `1.17.0`, AWS `6.70.0`, Helm `3.3.0`, every chart, Action and Python package pinned; lock files committed.
 13. **Wiring and DRY:** data sources by name or tag; no `terraform_remote_state`. Each value lives in one place: environment values in `env.yaml`, logic in `stacks/`, module pins in `stacks/`, the state backend set by CI from `env.yaml` and the root's path.
 14. **Auth and approvals:** OIDC only. Plan uses the read-only `github-terraform-plan` role (PRs); apply uses `github-terraform-apply` (`environment:<env>`). Branch protection requires a reviewed PR; `dev`/`stg`/`prd` environments gate applies and promotions.
+15. **Documentation:** every stack has a README (what it creates, `env.yaml` attributes, lookups, outputs, operating notes), indexed by `stacks/README.md` and linked from the root README. Update a stack's README in the same change as the stack.
 
 # About
 

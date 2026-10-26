@@ -13,7 +13,7 @@ app1/
 │   ├── frontend/              gunicorn app (GET / → SELECT 1) + static/ for S3
 │   ├── chart/                 Helm chart shared by both apps
 │   └── argocd/                renders one Argo CD Application per app
-├── stacks/                    all Terraform logic, one module per stack
+├── stacks/                    all Terraform logic, one module per stack (see stacks/README.md)
 │   ├── global/                account level: ECR + replication, deploy roles, S3/CloudFront static site
 │   ├── networking/            VPC, subnets, NAT                 → terraform-aws-networking
 │   ├── compute/               EKS cluster and nodes             → terraform-aws-compute
@@ -57,6 +57,19 @@ module "database" {
 To upgrade a module, change its `ref` once in `stacks/` and review the plans of every environment.
 To change an environment, edit its `env.yaml`.
 
+Each stack documents what it creates, the `env.yaml` attributes it reads, what it looks up from the
+stacks before it, its outputs and how to operate it. Start at [stacks/README.md](stacks/README.md):
+
+| Stack | |
+|---|---|
+| [global](stacks/global/README.md) | ECR + replication, app deploy roles, S3/CloudFront static site |
+| [networking](stacks/networking/README.md) | VPC, subnets, NAT |
+| [compute](stacks/compute/README.md) | EKS cluster, node group, Kubernetes access |
+| [database](stacks/database/README.md) | PostgreSQL writer, read replicas, backup copies |
+| [identity](stacks/identity/README.md) | IRSA roles for the controllers |
+| [platform](stacks/platform/README.md) | Controllers, Argo CD, ALB certificate, app wiring |
+| [observability](stacks/observability/README.md) | Database alarms and the alarm topic |
+
 ## Regions
 
 The first region in each environment is the **primary**:
@@ -74,9 +87,11 @@ Both regions serve the same hostnames (`backend.<env>.example.com`, `frontend.<e
 ExternalDNS creates one Route53 latency record per region, so users reach the closest healthy one.
 The static site (`static.<env>.example.com`) is CloudFront, so it is global.
 
-**Losing the primary region:** set `primary_region: us-west-1` in `<env>/env.yaml` and merge. The
-`us-west-1` database stack promotes its replica to a standalone writer with backups, and every other
-stack follows the new primary.
+**Losing the primary region:** the data survives (the `us-west-1` replica and the backup copies),
+but failover is **not automated yet**. Changing `primary_region` would promote the replica, but it
+would also move the global stack and send backups to the lost region. See
+[stacks/database](stacks/database/README.md#operating-notes); a tested failover procedure is an open
+follow-up.
 
 ## How changes ship
 
