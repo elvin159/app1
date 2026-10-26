@@ -1,0 +1,5 @@
+apiVersion: v2
+name: app1-apps
+description: One Argo CD Application per app1 app, pinned to the version each region runs.
+type: application
+version: 1.0.0

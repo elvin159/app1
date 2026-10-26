@@ -1,0 +1,8 @@
+# Set by the platform stack: repo URL, and each app's chart path and infrastructure values.
+repoURL: ""
+apps: {}
+
+# Set by <env>/<region>/<app>/values.yaml, one block per app:
+# backend:
+#   version: <git commit SHA>
+#   replicas: 2

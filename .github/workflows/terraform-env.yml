@@ -1,0 +1,112 @@
+name: terraform-env
+
+# Plans or applies one environment: its global stack, then each region's stacks in dependency order.
+# The primary region comes first, because the other regions replicate its database.
+on:
+  workflow_call:
+    inputs:
+      command:
+        description: plan or apply.
+        type: string
+        required: true
+      environment:
+        type: string
+        required: true
+      account_id:
+        type: string
+        required: true
+      regions:
+        description: Space-separated, primary region first.
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  ENVIRONMENT: ${{ inputs.environment }}
+  REGIONS: ${{ inputs.regions }}
+  STACKS: networking compute database identity platform observability
+
+jobs:
+  plan:
+    if: inputs.command == 'plan'
+    # Bootstrapped runner: its egress IP is the only one allowed to the EKS API (platform stack).
+    runs-on: [self-hosted, "app1-${{ inputs.environment }}"]
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.0
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.account_id }}:role/github-terraform-plan
+          aws-region: us-east-1
+      - name: terraform plan
+        run: |
+          roots="global"
+          for region in $REGIONS; do
+            for stack in $STACKS; do roots="$roots $region/$stack"; done
+          done
+
+          for root in $roots; do
+            dir="$ENVIRONMENT/$root"
+            echo "::group::$dir"
+            terraform -chdir="$dir" init
+            # Read-only role: no state lock. Plans never write state.
+            terraform -chdir="$dir" plan -lock=false -no-color | tee "$RUNNER_TEMP/plan.txt"
+            echo "::endgroup::"
+            {
+              echo "<details><summary><code>$dir</code></summary>"
+              echo
+              echo '```'
+              cat "$RUNNER_TEMP/plan.txt"
+              echo '```'
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+            # Later roots look this one up, so they can't be planned until it has been applied.
+            if [ -z "$(terraform -chdir="$dir" state list)" ]; then
+              echo "::notice::$dir has not been applied yet; the roots after it are planned once it is."
+              break
+            fi
+          done
+
+  apply:
+    if: inputs.command == 'apply'
+    runs-on: [self-hosted, "app1-${{ inputs.environment }}"]
+    # Required reviewers on the environment approve the apply.
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.0
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.account_id }}:role/github-terraform-apply
+          aws-region: us-east-1
+      - name: terraform apply
+        run: |
+          roots="global"
+          for region in $REGIONS; do
+            for stack in $STACKS; do roots="$roots $region/$stack"; done
+          done
+
+          for root in $roots; do
+            dir="$ENVIRONMENT/$root"
+            echo "::group::$dir"
+            terraform -chdir="$dir" init
+            terraform -chdir="$dir" plan -out=tfplan
+            terraform -chdir="$dir" apply tfplan
+            echo "::endgroup::"
+          done

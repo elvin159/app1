@@ -1,0 +1,38 @@
+name: frontend
+
+# Test on every PR. On main: build once, deploy to dev, then promote to stg and prd (see app.yml).
+# Also runs after a successful terraform apply, so the app deploys as soon as its infrastructure exists.
+on:
+  pull_request:
+    branches: [main]
+    paths: &paths
+      - "apps/frontend/**"
+      - "apps/argocd/**"
+      - ".github/workflows/frontend.yml"
+      - ".github/workflows/app.yml"
+      - ".github/scripts/**"
+  push:
+    branches: [main]
+    paths: *paths
+  workflow_run:
+    workflows: [terraform]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer run replaces one waiting for promotion approval.
+concurrency:
+  group: frontend
+  cancel-in-progress: false
+
+jobs:
+  frontend:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    uses: ./.github/workflows/app.yml
+    with:
+      app: frontend
+    permissions:
+      contents: write
+      id-token: write

@@ -1,0 +1,6 @@
+# Labels of the bootstrapped self-hosted runners, for actionlint.
+self-hosted-runner:
+  labels:
+    - app1-dev
+    - app1-stg
+    - app1-prd

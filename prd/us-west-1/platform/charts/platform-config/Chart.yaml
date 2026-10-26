@@ -1,0 +1,5 @@
+apiVersion: v2
+name: platform-config
+description: Secret stores, Argo CD repo credentials and the app1 root Application (app-of-apps).
+type: application
+version: 1.0.0

@@ -1,0 +1,5 @@
+frontend:
+  # Commit of apps/frontend running here: the chart and the image both come from it.
+  # dev: set by the frontend pipeline on every merge to main. stg, prd: set when that version is promoted.
+  version: ""
+  replicas: 2

@@ -1,0 +1,12 @@
+# Stand-in for the values Terraform and the region's version files provide, so CI can lint the chart.
+repoURL: git@github.com:elvin159/app1.git
+apps:
+  backend:
+    path: apps/backend/chart
+    values:
+      image:
+        repository: 111111111111.dkr.ecr.us-east-1.amazonaws.com/app1/backend
+      host: backend.dev.example.com
+backend:
+  version: 0123456789abcdef0123456789abcdef01234567
+  replicas: 3

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>app1</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; }
+  </style>
+</head>
+<body>
+  <h1>app1</h1>
+  <p>Static assets served from S3 through CloudFront.</p>
+  <ul>
+    <li><a id="frontend" href="#">Frontend</a>: runs <code>SELECT 1</code> on RDS and returns JSON</li>
+    <li><a id="backend" href="#">Backend</a>: pod name, database status and timestamp</li>
+  </ul>
+  <script>
+    // Served at static.<environment domain>; the apps live beside it. One build works everywhere.
+    const domain = location.hostname.replace(/^static\./, "");
+    for (const app of ["frontend", "backend"]) {
+      document.getElementById(app).href = `https://${app}.${domain}/`;
+    }
+  </script>
+</body>
+</html>

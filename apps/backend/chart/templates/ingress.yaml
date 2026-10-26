@@ -1,0 +1,34 @@
+# The AWS Load Balancer Controller creates the ALB (shared by all app1 Ingresses through group.name)
+# and picks the ACM certificate by host. ExternalDNS creates the Route53 record from the host: a
+# latency record per region when dns.setIdentifier is set.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.name }}
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/group.name: app1
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    {{- with .Values.dns.setIdentifier }}
+    external-dns.alpha.kubernetes.io/set-identifier: {{ . | quote }}
+    external-dns.alpha.kubernetes.io/aws-region: {{ required "dns.region is required" $.Values.dns.region | quote }}
+    {{- end }}
+spec:
+  ingressClassName: alb
+  tls:
+    - hosts:
+        - {{ required "host is required" .Values.host | quote }}
+  rules:
+    - host: {{ .Values.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Values.name }}
+                port:
+                  name: http
